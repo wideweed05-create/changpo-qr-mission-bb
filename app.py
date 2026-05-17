@@ -263,7 +263,7 @@ elif menu == "농장 배치표·출력물":
 
     farm_name = st.text_input("출력물용 농장명", value="창포마을 치유농장", key="print_farm_name")
     region = st.text_input("출력물용 지역/구역명", value="창포마을", key="print_region")
-    crop = st.selectbox("출력물용 작목", list(CROP_INFO.keys()), index=list(CROP_INFO.keys()).index(st.session_state.crop), key="print_crop")
+    crop = st.selectbox("출력물용 작목", list(CROPS.keys()), index=list(CROPS.keys()).index(st.session_state.crop), key="print_crop")
     visitor_type = st.selectbox(
         "출력물용 방문객 유형",
         ["일반 성인", "가족/아동", "고령층", "요양원/복지기관", "학생 단체", "연인/친구"],
