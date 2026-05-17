@@ -231,6 +231,114 @@ def fetch_kma_ultra_forecast(service_key, nx, ny):
 
     raise RuntimeError(f"기상청 공공데이터 호출에 실패했습니다. {last_error or ''}")
 
+
+def air_grade_label(value):
+    """에어코리아 등급값을 화면 표시용 문구로 변환합니다."""
+    mapping = {
+        "1": "좋음",
+        "2": "보통",
+        "3": "나쁨",
+        "4": "매우나쁨",
+        "좋음": "좋음",
+        "보통": "보통",
+        "나쁨": "나쁨",
+        "매우나쁨": "매우나쁨",
+    }
+    if value is None:
+        return "보통"
+    return mapping.get(str(value).strip(), "보통")
+
+def fetch_airkorea_sido(service_key, sido_name="전북", station_name=""):
+    """에어코리아 시도별 실시간 측정정보를 호출하고, 지정 측정소 또는 첫 번째 유효 측정소 데이터를 반환합니다."""
+    if not service_key:
+        raise ValueError("에어코리아 API 인증키를 입력해야 합니다.")
+
+    url = "https://apis.data.go.kr/B552584/ArpltnInforInqireSvc/getCtprvnRltmMesureDnsty"
+    keys_to_try = []
+    for key in [service_key, unquote(service_key)]:
+        if key and key not in keys_to_try:
+            keys_to_try.append(key)
+
+    last_error = None
+
+    for key in keys_to_try:
+        params = {
+            "serviceKey": key,
+            "returnType": "json",
+            "numOfRows": 100,
+            "pageNo": 1,
+            "sidoName": sido_name,
+            "ver": "1.0",
+        }
+
+        try:
+            response = requests.get(url, params=params, timeout=12)
+            response.raise_for_status()
+            data = response.json()
+            response_obj = data.get("response", {})
+            header = response_obj.get("header", {})
+            result_code = str(header.get("resultCode", ""))
+            result_msg = header.get("resultMsg", "")
+
+            if result_code not in ["00", "0"]:
+                last_error = f"{result_code} / {result_msg}"
+                continue
+
+            items = response_obj.get("body", {}).get("items", [])
+            if isinstance(items, dict):
+                items = [items]
+            if not items:
+                raise ValueError("대기질 응답은 성공했지만 측정 데이터가 비어 있습니다.")
+
+            selected = None
+            available_names = [str(item.get("stationName", "")) for item in items if item.get("stationName")]
+
+            if station_name:
+                for item in items:
+                    name = str(item.get("stationName", ""))
+                    if station_name == name or station_name in name:
+                        selected = item
+                        break
+
+            if selected is None:
+                # PM10 또는 PM2.5 값이 있는 첫 번째 측정소를 사용합니다.
+                for item in items:
+                    if str(item.get("pm10Value", "")).strip() not in ["", "-", "None"] or str(item.get("pm25Value", "")).strip() not in ["", "-", "None"]:
+                        selected = item
+                        break
+
+            if selected is None:
+                selected = items[0]
+
+            return {
+                "source": "한국환경공단_에어코리아_대기오염정보 - 시도별 실시간 측정정보조회",
+                "sido": sido_name,
+                "station": selected.get("stationName", ""),
+                "data_time": selected.get("dataTime", ""),
+                "pm10": selected.get("pm10Value", "-"),
+                "pm25": selected.get("pm25Value", "-"),
+                "o3": selected.get("o3Value", "-"),
+                "pm10_grade": air_grade_label(selected.get("pm10Grade")),
+                "pm25_grade": air_grade_label(selected.get("pm25Grade")),
+                "o3_grade": air_grade_label(selected.get("o3Grade")),
+                "khai": selected.get("khaiValue", "-"),
+                "khai_grade": air_grade_label(selected.get("khaiGrade")),
+                "available_stations": available_names[:30],
+                "raw": selected,
+            }
+
+        except Exception as e:
+            last_error = str(e)
+
+    raise RuntimeError(f"에어코리아 공공데이터 호출에 실패했습니다. {last_error or ''}")
+
+def combined_air_grade(pm10_grade, pm25_grade, o3_grade):
+    """PM10, PM2.5, O3 등급 중 가장 나쁜 등급을 추천 로직에 반영합니다."""
+    order = {"좋음": 1, "보통": 2, "나쁨": 3, "매우나쁨": 4}
+    reverse = {1: "좋음", 2: "보통", 3: "나쁨", 4: "매우나쁨"}
+    worst = max(order.get(pm10_grade, 2), order.get(pm25_grade, 2), order.get(o3_grade, 2))
+    return reverse[worst]
+
 def init():
     st.session_state.setdefault("visitor_name", "")
     st.session_state.setdefault("visitor_type", "일반 성인")
@@ -358,7 +466,7 @@ def visitor_points(visitor_name):
 init()
 gq = generated_from_url()
 st.title("🌿 팜어드벤처: 창포마을 QR 미션")
-st.caption("기상청 공공데이터 실제 연동이 추가된 v9")
+st.caption("기상청·에어코리아 공공데이터 연동이 추가된 v9-B")
 
 with st.sidebar:
     menu = st.radio("메뉴", ["홈","팜어드벤처 소개","농장주 미션 생성기","농장 배치표·출력물","공공데이터 추천","작목 퀴즈 생성","QR 미션 체험","QR 코드 만들기","수료증·포인트","관리자 데이터","초기화"])
@@ -374,7 +482,7 @@ st.session_state.theme = st.selectbox("체험 테마", list(THEMES), index=list(
 if menu == "홈":
     st.header("서비스 개요")
     st.write("팜어드벤처는 농장주가 작목·지역·방문객 유형·테마를 입력하면 작목 특징을 반영한 QR 미션 세트를 자동 생성하는 치유농장 체험 MVP입니다.")
-    st.success("v9 핵심: 기상청 단기예보 API 실제 연동, 공공데이터 기반 체험 추천, 농장주 미션 생성기, QR 출력물 관리")
+    st.success("v9-B 핵심: 기상청 날씨 API와 에어코리아 대기질 API를 함께 활용해 체험 코스를 추천합니다.")
 
 elif menu == "팜어드벤처 소개":
     st.header("팜어드벤처 소개")
@@ -537,11 +645,11 @@ elif menu == "농장 배치표·출력물":
 elif menu == "공공데이터 추천":
     st.header("공공데이터 연동 추천")
     st.write(
-        "v9에서는 기상청 단기예보 API를 실제로 호출해 기온, 강수량, 풍속, 하늘상태를 불러오고 "
-        "그 값을 체험 적합도와 추천 코스에 반영합니다."
+        "v9-B에서는 기상청 단기예보 API와 에어코리아 대기오염정보 API를 함께 활용해 "
+        "날씨와 대기질을 반영한 치유농장 체험 코스를 추천합니다."
     )
 
-    st.subheader("창포마을 위치 정보")
+    st.subheader("1. 창포마을 위치 정보")
     st.caption("기본값은 전북특별자치도 완주군 고산면 대아저수로 392 기준입니다.")
     loc1, loc2 = st.columns(2)
     with loc1:
@@ -558,38 +666,64 @@ elif menu == "공공데이터 추천":
     with c2:
         ny = st.number_input("기상청 ny", value=int(calc_ny), step=1)
 
-    st.subheader("기상청 API 인증키")
-    service_key = st.text_input(
-        "기상청 단기예보 API 일반 인증키",
-        type="password",
-        placeholder="공공데이터포털에서 복사한 일반 인증키를 붙여넣으세요."
-    )
+    st.subheader("2. API 인증키 입력")
+    k1, k2 = st.columns(2)
+    with k1:
+        kma_key = st.text_input(
+            "기상청 단기예보 API 일반 인증키",
+            type="password",
+            placeholder="기상청 API 키"
+        )
+    with k2:
+        air_key = st.text_input(
+            "에어코리아 대기오염정보 API 일반 인증키",
+            type="password",
+            placeholder="에어코리아 API 키"
+        )
+
     st.caption("인증키는 코드나 GitHub에 저장하지 않고, 테스트할 때 화면에 직접 입력하는 방식입니다.")
 
-    pm = st.selectbox("미세먼지 상태", ["좋음","보통","나쁨","매우나쁨"], index=1)
-    st.caption("미세먼지는 v10에서 에어코리아 API 연동 예정입니다. v9에서는 수동 선택값으로 추천에 함께 반영합니다.")
+    st.subheader("3. 에어코리아 조회 조건")
+    air1, air2 = st.columns(2)
+    with air1:
+        sido_name = st.selectbox("시도명", ["전북", "전남", "광주", "충남", "충북", "경남", "경북", "서울", "경기", "인천", "대전", "대구", "부산", "울산", "강원", "제주", "세종"], index=0)
+    with air2:
+        station_name = st.text_input("측정소명 선택 입력", value="", placeholder="비워두면 시도 내 첫 번째 유효 측정소 사용")
 
-    use_manual = False
-    weather = None
+    st.caption("정확한 측정소명을 모를 경우 비워두면 됩니다. 앱이 해당 시도 내 유효 측정소 하나를 자동 선택합니다.")
 
-    if st.button("기상청 공공데이터 불러오기"):
+    if st.button("기상청·에어코리아 공공데이터 불러오기"):
+        weather_error = None
+        air_error = None
+
         try:
             with st.spinner("기상청 공공데이터를 불러오는 중입니다..."):
-                weather = fetch_kma_ultra_forecast(service_key, nx, ny)
+                weather = fetch_kma_ultra_forecast(kma_key, nx, ny)
             st.session_state["latest_weather"] = weather
             st.success("기상청 공공데이터를 성공적으로 불러왔습니다.")
         except Exception as e:
-            st.error(str(e))
-            st.warning("발표 당일 API 오류에 대비해 아래 수동 입력 방식으로도 추천을 계속할 수 있습니다.")
-            use_manual = True
+            weather_error = str(e)
+            st.error(f"기상청 호출 실패: {weather_error}")
 
-    if "latest_weather" in st.session_state and not use_manual:
-        weather = st.session_state["latest_weather"]
+        try:
+            with st.spinner("에어코리아 공공데이터를 불러오는 중입니다..."):
+                air = fetch_airkorea_sido(air_key, sido_name=sido_name, station_name=station_name)
+            st.session_state["latest_air"] = air
+            st.success("에어코리아 공공데이터를 성공적으로 불러왔습니다.")
+        except Exception as e:
+            air_error = str(e)
+            st.error(f"에어코리아 호출 실패: {air_error}")
+
+        if weather_error or air_error:
+            st.warning("API 일부가 실패해도 아래 수동 입력 백업으로 추천 로직을 계속 확인할 수 있습니다.")
+
+    weather = st.session_state.get("latest_weather")
+    air = st.session_state.get("latest_air")
 
     st.divider()
 
     if weather:
-        st.subheader("불러온 공공데이터")
+        st.subheader("기상청 공공데이터 조회 결과")
         wc1, wc2, wc3, wc4 = st.columns(4)
         wc1.metric("기온", f"{weather['temp']}℃")
         wc2.metric("강수량", f"{weather['rain']}mm")
@@ -605,22 +739,44 @@ elif menu == "공공데이터 추천":
         temp = weather["temp"]
         rain = weather["rain"]
         wind = weather["wind"]
-
     else:
-        st.subheader("수동 입력 백업")
-        st.info("API 키가 아직 없거나 호출이 실패했을 때는 수동 입력으로 추천 로직을 확인할 수 있습니다.")
+        st.subheader("기상 데이터 수동 입력 백업")
         bc1, bc2 = st.columns(2)
         with bc1:
             temp = st.slider("기온(℃)", -10, 40, 22)
             rain = st.slider("강수량(mm)", 0, 50, 0)
         with bc2:
             wind = st.slider("풍속(m/s)", 0, 20, 2)
-            st.write("하늘상태: 수동 입력에서는 추천 로직에 직접 반영하지 않습니다.")
 
+    if air:
+        st.subheader("에어코리아 대기질 조회 결과")
+        ac1, ac2, ac3, ac4 = st.columns(4)
+        ac1.metric("PM10", f"{air['pm10']}㎍/㎥")
+        ac2.metric("PM2.5", f"{air['pm25']}㎍/㎥")
+        ac3.metric("오존", f"{air['o3']}ppm")
+        ac4.metric("통합대기", air["khai_grade"])
+
+        st.write(f"측정소: **{air['station']}**")
+        st.write(f"측정 시각: **{air['data_time']}**")
+        st.write(f"PM10 등급: **{air['pm10_grade']}** / PM2.5 등급: **{air['pm25_grade']}** / O3 등급: **{air['o3_grade']}**")
+        st.write(f"데이터 출처: **{air['source']}**")
+
+        if air.get("available_stations"):
+            with st.expander("조회 가능한 측정소 일부 보기"):
+                st.write(", ".join(air["available_stations"]))
+
+        pm = combined_air_grade(air["pm10_grade"], air["pm25_grade"], air["o3_grade"])
+        st.info(f"추천 로직 반영 대기질 등급: **{pm}**")
+    else:
+        st.subheader("대기질 수동 입력 백업")
+        pm = st.selectbox("미세먼지 상태", ["좋음", "보통", "나쁨", "매우나쁨"], index=1)
+
+    st.divider()
     s, reasons = score(temp, rain, wind, pm, st.session_state.visitor_type)
 
-    st.subheader("공공데이터 기반 추천 결과")
+    st.subheader("날씨·대기질 기반 추천 결과")
     st.metric("오늘의 치유체험 적합도", f"{s}점")
+
     if s >= 80:
         st.success("추천 코스: 표준 야외형 코스")
         recommended = ["입구 환영 미션", "작물 관찰 미션", "생육환경 퀴즈", "느린 걷기 미션", "마무리 수료 미션"]
@@ -641,9 +797,9 @@ elif menu == "공공데이터 추천":
 
     st.subheader("공공데이터 활용 구조")
     st.table([
-        {"공공데이터":"기상청 단기예보 실제 API", "활용값":"기온·강수량·풍속·하늘상태", "앱 적용":"체험 적합도 및 코스 추천"},
-        {"공공데이터":"에어코리아 대기오염정보", "활용값":"미세먼지·초미세먼지·오존", "앱 적용":"v10에서 실외 체류 시간 조정 예정"},
-        {"공공데이터":"작목 생육 정보", "활용값":"작물 특징·생육환경·관찰 포인트", "앱 적용":"퀴즈·미션 자동 생성"}
+        {"공공데이터": "기상청 단기예보 실제 API", "활용값": "기온·강수량·풍속·하늘상태", "앱 적용": "체험 적합도 및 코스 추천"},
+        {"공공데이터": "에어코리아 대기오염정보 실제 API", "활용값": "PM10·PM2.5·O3·통합대기환경지수", "앱 적용": "실외 체류 시간 및 실내형 코스 추천"},
+        {"공공데이터": "작목 생육 정보", "활용값": "작물 특징·생육환경·관찰 포인트", "앱 적용": "퀴즈·미션 자동 생성"}
     ])
 
 
