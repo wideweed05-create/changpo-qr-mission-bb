@@ -197,7 +197,7 @@ def visitor_points(visitor_name):
 init()
 gq = generated_from_url()
 st.title("🌿 팜어드벤처: 창포마을 QR 미션")
-st.caption("농장 배치표·출력물 기능이 추가된 v8")
+st.caption("농장 배치표·출력물 오류를 수정한 v8.2")
 
 with st.sidebar:
     menu = st.radio("메뉴", ["홈","팜어드벤처 소개","농장주 미션 생성기","농장 배치표·출력물","공공데이터 추천","작목 퀴즈 생성","QR 미션 체험","QR 코드 만들기","수료증·포인트","관리자 데이터","초기화"])
@@ -281,13 +281,13 @@ elif menu == "농장 배치표·출력물":
         mission_set = st.session_state.generated
         st.info("현재 세션에서 생성된 미션 세트를 우선 사용합니다. 새 조건으로 다시 보고 싶으면 농장주 미션 생성기에서 다시 생성하세요.")
     else:
-        mission_set = generate_mission_set(farm_name, region, crop, visitor_type, theme, 5)
+        mission_set = gen_missions(farm_name, region, crop, visitor_type, theme, 5)
         st.info("아직 생성된 미션 세트가 없어, 현재 입력값 기준으로 예시 미션 세트를 자동 구성했습니다.")
 
     st.subheader("현장 배치표")
     placement_rows = []
     for idx, mission in enumerate(mission_set, start=1):
-        url = generated_mission_url(base, farm_name, region, crop, visitor_type, theme, idx - 1)
+        url = gen_url(base, farm_name, region, crop, visitor_type, theme, idx - 1)
         placement_rows.append({
             "순서": idx,
             "QR 제목": mission["title"],
@@ -368,7 +368,7 @@ elif menu == "농장 배치표·출력물":
 
     st.subheader("v8 시연 포인트")
     st.success(
-        "v8에서는 앱이 QR을 만드는 것에서 끝나지 않고, "
+        "v8.2에서는 앱이 QR을 만드는 것에서 끝나지 않고, "
         "농장주가 실제 현장에 QR을 배치하고 안내문을 출력해 운영할 수 있는 형태까지 확장되었습니다."
     )
 
