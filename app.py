@@ -77,6 +77,7 @@ def init():
     st.session_state.setdefault("crop", "딸기")
     st.session_state.setdefault("completed", [])
     st.session_state.setdefault("generated", [])
+    st.session_state.setdefault("app_base_url", guess_base_url() or "https://changpo-qr-mission-bb.streamlit.app")
 
 def append_csv(path, row):
     df = pd.DataFrame([row])
@@ -134,13 +135,72 @@ def score(temp, rain, wind, pm, visitor):
     if visitor in ["고령층","가족/아동","요양원/복지기관"]: s-=5; reasons.append("방문자 특성을 고려해 동선을 짧게 설계합니다.")
     return max(0,min(100,s)), reasons
 
+
+def guess_base_url():
+    """Streamlit Cloud에서는 브라우저 host를 읽어 배포 주소를 추정합니다. 실패하면 빈 문자열을 반환합니다."""
+    try:
+        host = st.context.headers.get("host", "")
+        if not host:
+            return ""
+        scheme = "https" if "streamlit.app" in host else "http"
+        return f"{scheme}://{host}"
+    except Exception:
+        return ""
+
+def base_url_widget(key, label="앱 기본 주소"):
+    default_url = st.session_state.get("app_base_url", "") or guess_base_url()
+    url = st.text_input(
+        label,
+        value=default_url,
+        placeholder="예: https://changpo-qr-mission-bb.streamlit.app",
+        key=key,
+        help="스마트폰으로 찍히는 QR을 만들려면 localhost가 아니라 Streamlit 배포 주소를 넣어야 합니다."
+    ).strip().rstrip("/")
+    if url:
+        st.session_state.app_base_url = url
+    if "localhost" in url:
+        st.warning("현재 주소가 localhost입니다. 이 QR은 내 컴퓨터에서만 작동합니다. 스마트폰 시연용은 Streamlit 배포 주소로 바꿔주세요.")
+    elif url.startswith("https://"):
+        st.success("스마트폰 접속용 배포 주소가 적용되었습니다.")
+    else:
+        st.info("배포 주소를 입력하면 해당 주소를 기준으로 QR이 생성됩니다.")
+    return url
+
+def visitor_points(visitor_name):
+    mdf = read_csv(MISSION_FILE)
+    qdf = read_csv(QUIZ_FILE)
+    name = visitor_name or "익명"
+
+    mission_points = 0
+    quiz_points = 0
+    mission_count = 0
+    quiz_count = 0
+
+    if not mdf.empty and "visitor_name" in mdf.columns:
+        user_mdf = mdf[mdf["visitor_name"].fillna("익명") == name]
+        mission_count = len(user_mdf)
+        if "earned_points" in user_mdf.columns:
+            mission_points = int(user_mdf["earned_points"].sum())
+
+    if not qdf.empty and "visitor_name" in qdf.columns:
+        user_qdf = qdf[qdf["visitor_name"].fillna("익명") == name]
+        quiz_count = len(user_qdf)
+        if "earned_points" in user_qdf.columns:
+            quiz_points = int(user_qdf["earned_points"].sum())
+
+    # 현재 세션에서 완료했지만 아직 CSV 기준으로 잡히지 않는 경우를 보완
+    mission_points = max(mission_points, len(st.session_state.get("completed", [])) * 10)
+    mission_count = max(mission_count, len(st.session_state.get("completed", [])))
+
+    return mission_count, quiz_count, mission_points + quiz_points
+
 init()
 gq = generated_from_url()
 st.title("🌿 팜어드벤처: 창포마을 QR 미션")
-st.caption("농장주 원클릭 미션 생성기가 추가된 v6")
+st.caption("수료증·포인트 관리와 QR 배포주소 자동 설정이 추가된 v7")
 
 with st.sidebar:
-    menu = st.radio("메뉴", ["홈","팜어드벤처 소개","농장주 미션 생성기","공공데이터 추천","작목 퀴즈 생성","QR 미션 체험","QR 코드 만들기","관리자 데이터","초기화"])
+    menu = st.radio("메뉴", ["홈","팜어드벤처 소개","농장주 미션 생성기","공공데이터 추천","작목 퀴즈 생성","QR 미션 체험","QR 코드 만들기","수료증·포인트","관리자 데이터","초기화"])
 if gq: menu = "QR 미션 체험"
 
 st.subheader("방문자 기본 정보")
@@ -153,7 +213,7 @@ st.session_state.theme = st.selectbox("체험 테마", list(THEMES), index=list(
 if menu == "홈":
     st.header("서비스 개요")
     st.write("팜어드벤처는 농장주가 작목·지역·방문객 유형·테마를 입력하면 작목 특징을 반영한 QR 미션 세트를 자동 생성하는 치유농장 체험 MVP입니다.")
-    st.success("v6 핵심: 농장주 미션 생성기, 생성 미션 QR 다운로드, 생성 미션 응답 저장")
+    st.success("v7 핵심: 농장주 미션 생성기, 생성 미션 QR 다운로드, 수료증·포인트 관리, QR 배포주소 자동 설정")
 
 elif menu == "팜어드벤처 소개":
     st.header("팜어드벤처 소개")
@@ -169,7 +229,7 @@ elif menu == "농장주 미션 생성기":
     visitor = st.selectbox("주 방문객 유형", VISITORS, key="gen_visitor")
     theme = st.selectbox("미션 테마", list(THEMES), key="gen_theme")
     count = st.slider("생성할 미션 수", 3, 5, 5)
-    base = st.text_input("앱 기본 주소", "http://localhost:8501").strip().rstrip("/")
+    base = base_url_widget("generator_base_url")
     if st.button("미션 세트 생성하기"):
         st.session_state.generated = gen_missions(farm, region, crop, visitor, theme, count)
         append_csv(GEN_FILE, {"timestamp":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),"farm":farm,"region":region,"crop":crop,"visitor_type":visitor,"theme":theme,"mission_count":count})
@@ -249,7 +309,7 @@ elif menu == "QR 미션 체험":
 
 elif menu == "QR 코드 만들기":
     st.header("기본 QR 코드 만들기")
-    base = st.text_input("앱 기본 주소", "http://localhost:8501").strip().rstrip("/")
+    base = base_url_widget("basic_qr_base_url")
     zbuf = io.BytesIO()
     with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as z:
         for m in STATIC:
@@ -258,6 +318,81 @@ elif menu == "QR 코드 만들기":
             if q:
                 st.image(q, width=160); z.writestr(f"{m['id']}_qr.png", q.getvalue())
     zbuf.seek(0); st.download_button("기본 QR 전체 ZIP 다운로드", zbuf.getvalue(), "basic_qr_set.zip", "application/zip")
+
+
+elif menu == "수료증·포인트":
+    st.header("수료증·포인트")
+    display_name = st.session_state.visitor_name or "익명"
+    mission_count, quiz_count, total_points = visitor_points(display_name)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("완료 미션", f"{mission_count}개")
+    c2.metric("퀴즈 참여", f"{quiz_count}개")
+    c3.metric("보유 포인트", f"{total_points}P")
+
+    st.subheader("창포마을 치유미션 수료증")
+    if mission_count >= 5 or total_points >= 50:
+        status = "수료"
+        coupon = "창포마을 농산물 5% 할인 쿠폰"
+        st.success("수료 조건을 달성했습니다. 수료증과 쿠폰을 발급할 수 있습니다.")
+    else:
+        status = "진행 중"
+        coupon = "미션 5개 완료 또는 50P 달성 시 쿠폰 발급"
+        st.info("아직 수료 조건 전입니다. 미션과 퀴즈를 더 진행해보세요.")
+
+    certificate = f"""🌿 팜어드벤처 창포마을 치유미션 수료증
+
+이름/팀명: {display_name}
+체험 작목: {st.session_state.crop}
+체험 테마: {st.session_state.theme}
+방문자 유형: {st.session_state.visitor_type}
+
+완료 미션 수: {mission_count}개
+퀴즈 참여 수: {quiz_count}개
+획득 포인트: {total_points}P
+수료 상태: {status}
+발급 혜택: {coupon}
+
+위 방문자는 팜어드벤처 QR 미션을 통해 작물 관찰, 생육환경 퀴즈, 치유 회고 활동에 참여하였습니다.
+
+발급 일시: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+"""
+    st.text_area("수료증 미리보기", certificate, height=320)
+    st.download_button(
+        "수료증 TXT 다운로드",
+        certificate.encode("utf-8-sig"),
+        "farm_adventure_certificate.txt",
+        "text/plain"
+    )
+
+    st.subheader("포인트 마켓 시연")
+    st.caption("현재는 실제 결제가 아니라 대회 시연용 리워드 구조입니다.")
+
+    products = [
+        {"상품": "창포마을 제철 농산물 꾸러미", "정상가": 20000, "필요 포인트": 50, "할인": 1000},
+        {"상품": "못난이 농산물 꾸러미", "정상가": 15000, "필요 포인트": 40, "할인": 1500},
+        {"상품": "허브차 체험 키트", "정상가": 12000, "필요 포인트": 30, "할인": 1000},
+    ]
+
+    for p in products:
+        available = total_points >= p["필요 포인트"]
+        final_price = p["정상가"] - p["할인"] if available else p["정상가"]
+        with st.container(border=True):
+            st.write(f"**{p['상품']}**")
+            st.write(f"정상가: {p['정상가']:,}원")
+            st.write(f"필요 포인트: {p['필요 포인트']}P")
+            if available:
+                st.success(f"사용 가능 · 예상 결제가: {final_price:,}원")
+            else:
+                st.warning(f"포인트 부족 · {p['필요 포인트'] - total_points}P 더 필요")
+
+    st.subheader("v7에서 개선된 QR 주소 처리")
+    st.write(
+        "이제 QR 생성 화면의 기본 주소가 localhost로 고정되지 않고, "
+        "가능하면 현재 접속 중인 Streamlit 배포 주소를 자동으로 불러옵니다. "
+        "주소가 다르면 입력칸에서 직접 수정하면 됩니다."
+    )
+
 
 elif menu == "관리자 데이터":
     st.header("관리자 데이터")
