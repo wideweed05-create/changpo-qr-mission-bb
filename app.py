@@ -197,10 +197,10 @@ def visitor_points(visitor_name):
 init()
 gq = generated_from_url()
 st.title("🌿 팜어드벤처: 창포마을 QR 미션")
-st.caption("수료증·포인트 관리와 QR 배포주소 자동 설정이 추가된 v7")
+st.caption("농장 배치표·출력물 기능이 추가된 v8")
 
 with st.sidebar:
-    menu = st.radio("메뉴", ["홈","팜어드벤처 소개","농장주 미션 생성기","공공데이터 추천","작목 퀴즈 생성","QR 미션 체험","QR 코드 만들기","수료증·포인트","관리자 데이터","초기화"])
+    menu = st.radio("메뉴", ["홈","팜어드벤처 소개","농장주 미션 생성기","농장 배치표·출력물","공공데이터 추천","작목 퀴즈 생성","QR 미션 체험","QR 코드 만들기","수료증·포인트","관리자 데이터","초기화"])
 if gq: menu = "QR 미션 체험"
 
 st.subheader("방문자 기본 정보")
@@ -213,7 +213,7 @@ st.session_state.theme = st.selectbox("체험 테마", list(THEMES), index=list(
 if menu == "홈":
     st.header("서비스 개요")
     st.write("팜어드벤처는 농장주가 작목·지역·방문객 유형·테마를 입력하면 작목 특징을 반영한 QR 미션 세트를 자동 생성하는 치유농장 체험 MVP입니다.")
-    st.success("v7 핵심: 농장주 미션 생성기, 생성 미션 QR 다운로드, 수료증·포인트 관리, QR 배포주소 자동 설정")
+    st.success("v8 핵심: 농장주 미션 생성기, QR 다운로드, 현장 배치표, 출력용 안내문, 수료증·포인트 관리")
 
 elif menu == "팜어드벤처 소개":
     st.header("팜어드벤처 소개")
@@ -252,6 +252,126 @@ elif menu == "농장주 미션 생성기":
         zbuf.seek(0)
         st.download_button("생성 미션 QR 전체 ZIP 다운로드", zbuf.getvalue(), "generated_mission_qr_set.zip", "application/zip")
         st.download_button("생성 미션 목록 CSV 다운로드", pd.DataFrame(st.session_state.generated).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"), "generated_mission_list.csv", "text/csv")
+
+
+elif menu == "농장 배치표·출력물":
+    st.header("농장 배치표·출력물")
+    st.write(
+        "농장주가 생성한 QR 미션을 실제 현장에 붙일 수 있도록 "
+        "배치표, 출력용 안내문, 운영 체크리스트를 자동으로 정리하는 화면입니다."
+    )
+
+    farm_name = st.text_input("출력물용 농장명", value="창포마을 치유농장", key="print_farm_name")
+    region = st.text_input("출력물용 지역/구역명", value="창포마을", key="print_region")
+    crop = st.selectbox("출력물용 작목", list(CROP_INFO.keys()), index=list(CROP_INFO.keys()).index(st.session_state.crop), key="print_crop")
+    visitor_type = st.selectbox(
+        "출력물용 방문객 유형",
+        ["일반 성인", "가족/아동", "고령층", "요양원/복지기관", "학생 단체", "연인/친구"],
+        key="print_visitor_type"
+    )
+    theme = st.selectbox(
+        "출력물용 테마",
+        ["힐링형", "추리형", "교육형", "가족형", "고령층 배려형"],
+        index=["힐링형", "추리형", "교육형", "가족형", "고령층 배려형"].index(st.session_state.theme),
+        key="print_theme"
+    )
+    base = base_url_widget("print_base_url", "출력물용 앱 기본 주소")
+
+    if st.session_state.get("generated"):
+        mission_set = st.session_state.generated
+        st.info("현재 세션에서 생성된 미션 세트를 우선 사용합니다. 새 조건으로 다시 보고 싶으면 농장주 미션 생성기에서 다시 생성하세요.")
+    else:
+        mission_set = generate_mission_set(farm_name, region, crop, visitor_type, theme, 5)
+        st.info("아직 생성된 미션 세트가 없어, 현재 입력값 기준으로 예시 미션 세트를 자동 구성했습니다.")
+
+    st.subheader("현장 배치표")
+    placement_rows = []
+    for idx, mission in enumerate(mission_set, start=1):
+        url = generated_mission_url(base, farm_name, region, crop, visitor_type, theme, idx - 1)
+        placement_rows.append({
+            "순서": idx,
+            "QR 제목": mission["title"],
+            "권장 배치 장소": mission["place"],
+            "현장 운영 포인트": mission["task"][:55] + ("..." if len(mission["task"]) > 55 else ""),
+            "QR 주소": url
+        })
+
+    placement_df = pd.DataFrame(placement_rows)
+    st.dataframe(placement_df, use_container_width=True)
+    st.download_button(
+        "농장 배치표 CSV 다운로드",
+        placement_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
+        "farm_adventure_placement_plan.csv",
+        "text/csv"
+    )
+
+    st.subheader("출력용 안내문")
+    guide_text = f"""🌿 {farm_name} 팜어드벤처 QR 미션 안내
+
+오늘의 작목: {crop}
+체험 테마: {theme}
+추천 방문객 유형: {visitor_type}
+
+참여 방법
+1. 농장 곳곳에 있는 QR 코드를 스마트폰 카메라로 스캔합니다.
+2. 화면에 나오는 미션을 읽고 작물을 관찰합니다.
+3. 선택지와 짧은 기록을 입력한 뒤 미션 완료 버튼을 누릅니다.
+4. 미션과 퀴즈를 완료하면 포인트가 적립됩니다.
+5. 마지막에는 수료증과 농산물 할인 쿠폰을 확인할 수 있습니다.
+
+주의사항
+- 농장 운영자의 안내에 따라 이동해 주세요.
+- 작물은 함부로 꺾거나 훼손하지 않습니다.
+- 비나 미세먼지가 있는 날에는 실내형·단축형 코스로 운영될 수 있습니다.
+- 고령층, 아동, 단체 방문객은 이동 중 안전에 유의해 주세요.
+
+이 서비스는 작목 정보와 공공데이터를 활용해 농장 체험을 더 쉽고 재미있게 만드는 QR 미션형 체험 서비스입니다.
+"""
+    st.text_area("A4 안내문 초안", guide_text, height=360)
+    st.download_button(
+        "출력용 안내문 TXT 다운로드",
+        guide_text.encode("utf-8-sig"),
+        "farm_adventure_print_guide.txt",
+        "text/plain"
+    )
+
+    st.subheader("QR 라벨 문구")
+    label_lines = []
+    for idx, mission in enumerate(mission_set, start=1):
+        label_lines.append(f"[{idx}번 QR] {mission['title']}\n장소: {mission['place']}\n안내: QR을 스캔하고 미션을 완료해 주세요.\n")
+    label_text = "\n".join(label_lines)
+    st.text_area("QR 옆에 붙일 짧은 라벨", label_text, height=260)
+    st.download_button(
+        "QR 라벨 문구 TXT 다운로드",
+        label_text.encode("utf-8-sig"),
+        "farm_adventure_qr_labels.txt",
+        "text/plain"
+    )
+
+    st.subheader("운영 체크리스트")
+    checklist = [
+        {"구분": "QR 준비", "체크 내용": "생성된 QR을 출력하고 각 구역에 부착했는가?"},
+        {"구분": "동선 점검", "체크 내용": "방문자가 QR 순서대로 안전하게 이동할 수 있는가?"},
+        {"구분": "작물 보호", "체크 내용": "만지면 안 되는 구역이나 주의 문구가 표시되어 있는가?"},
+        {"구분": "공공데이터 확인", "체크 내용": "당일 기온, 강수, 미세먼지 상태를 확인했는가?"},
+        {"구분": "방문객 안내", "체크 내용": "미션 수행 방법과 포인트·수료증 안내를 설명했는가?"},
+        {"구분": "관리자 확인", "체크 내용": "체험 후 관리자 데이터에 응답이 저장되는지 확인했는가?"},
+    ]
+    checklist_df = pd.DataFrame(checklist)
+    st.table(checklist_df)
+    st.download_button(
+        "운영 체크리스트 CSV 다운로드",
+        checklist_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
+        "farm_adventure_operation_checklist.csv",
+        "text/csv"
+    )
+
+    st.subheader("v8 시연 포인트")
+    st.success(
+        "v8에서는 앱이 QR을 만드는 것에서 끝나지 않고, "
+        "농장주가 실제 현장에 QR을 배치하고 안내문을 출력해 운영할 수 있는 형태까지 확장되었습니다."
+    )
+
 
 elif menu == "공공데이터 추천":
     st.header("공공데이터 기반 체험 추천")
