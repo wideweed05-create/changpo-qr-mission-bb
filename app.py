@@ -1,10 +1,12 @@
 
 import streamlit as st
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote, unquote
+from zoneinfo import ZoneInfo
 import pandas as pd
-import io, zipfile
+import requests
+import io, zipfile, math, re
 try:
     import qrcode
 except Exception:
@@ -69,6 +71,165 @@ STATIC = [
     {"id":"walk","title":"4번 QR · 느린 걷기 미션","place":"산책로","task":"천천히 걸으며 들리는 소리 하나를 찾아보세요.","choices":["바람","새","발걸음","목소리"]},
     {"id":"message","title":"5번 QR · 오늘의 치유 문장","place":"마무리 공간","task":"오늘 나에게 해주고 싶은 말을 적어보세요.","choices":["수고했어","괜찮아","잘 쉬었다","다시 오고 싶다"]}
 ]
+
+
+def dfs_xy_conv(lat, lon):
+    """위도·경도를 기상청 단기예보 격자 좌표 nx, ny로 변환합니다."""
+    RE = 6371.00877
+    GRID = 5.0
+    SLAT1 = 30.0
+    SLAT2 = 60.0
+    OLON = 126.0
+    OLAT = 38.0
+    XO = 43
+    YO = 136
+    DEGRAD = math.pi / 180.0
+
+    re_km = RE / GRID
+    slat1 = SLAT1 * DEGRAD
+    slat2 = SLAT2 * DEGRAD
+    olon = OLON * DEGRAD
+    olat = OLAT * DEGRAD
+
+    sn = math.tan(math.pi * 0.25 + slat2 * 0.5) / math.tan(math.pi * 0.25 + slat1 * 0.5)
+    sn = math.log(math.cos(slat1) / math.cos(slat2)) / math.log(sn)
+    sf = math.tan(math.pi * 0.25 + slat1 * 0.5)
+    sf = (sf ** sn) * math.cos(slat1) / sn
+    ro = math.tan(math.pi * 0.25 + olat * 0.5)
+    ro = re_km * sf / (ro ** sn)
+
+    ra = math.tan(math.pi * 0.25 + lat * DEGRAD * 0.5)
+    ra = re_km * sf / (ra ** sn)
+    theta = lon * DEGRAD - olon
+    if theta > math.pi:
+        theta -= 2.0 * math.pi
+    if theta < -math.pi:
+        theta += 2.0 * math.pi
+    theta *= sn
+
+    x = int(ra * math.sin(theta) + XO + 0.5)
+    y = int(ro - ra * math.cos(theta) + YO + 0.5)
+    return x, y
+
+def ultra_base_time(now=None):
+    """기상청 초단기예보 조회에 사용할 base_date, base_time을 계산합니다."""
+    if now is None:
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+    # 초단기예보는 매시 30분 이후 자료가 안정적으로 조회되므로, 45분 전이면 이전 시각을 사용합니다.
+    if now.minute < 45:
+        now = now - timedelta(hours=1)
+    return now.strftime("%Y%m%d"), now.strftime("%H00"), now.strftime("%Y-%m-%d %H:%M")
+
+def parse_rain(value):
+    if value is None:
+        return 0.0
+    text_value = str(value)
+    if "강수없음" in text_value or text_value.strip() in ["0", "0.0"]:
+        return 0.0
+    if "1mm 미만" in text_value:
+        return 0.5
+    nums = re.findall(r"\d+(?:\.\d+)?", text_value)
+    if not nums:
+        return 0.0
+    return float(nums[0])
+
+def sky_label(code):
+    return {"1": "맑음", "3": "구름많음", "4": "흐림"}.get(str(code), str(code))
+
+def pty_label(code):
+    return {
+        "0": "없음",
+        "1": "비",
+        "2": "비/눈",
+        "3": "눈",
+        "5": "빗방울",
+        "6": "빗방울눈날림",
+        "7": "눈날림"
+    }.get(str(code), str(code))
+
+def fetch_kma_ultra_forecast(service_key, nx, ny):
+    """기상청 단기예보 조회서비스의 초단기예보를 호출합니다."""
+    if not service_key:
+        raise ValueError("기상청 API 인증키를 입력해야 합니다.")
+
+    base_date, base_time, requested_at = ultra_base_time()
+    url = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getUltraSrtFcst"
+
+    keys_to_try = []
+    for key in [service_key, unquote(service_key)]:
+        if key and key not in keys_to_try:
+            keys_to_try.append(key)
+
+    last_error = None
+
+    for key in keys_to_try:
+        params = {
+            "serviceKey": key,
+            "pageNo": 1,
+            "numOfRows": 1000,
+            "dataType": "JSON",
+            "base_date": base_date,
+            "base_time": base_time,
+            "nx": int(nx),
+            "ny": int(ny),
+        }
+
+        try:
+            response = requests.get(url, params=params, timeout=12)
+            response.raise_for_status()
+            data = response.json()
+            header = data.get("response", {}).get("header", {})
+            result_code = str(header.get("resultCode", ""))
+            result_msg = header.get("resultMsg", "")
+
+            if result_code != "00":
+                last_error = f"{result_code} / {result_msg}"
+                continue
+
+            items = data.get("response", {}).get("body", {}).get("items", {}).get("item", [])
+            if isinstance(items, dict):
+                items = [items]
+            if not items:
+                raise ValueError("응답은 성공했지만 예보 데이터가 비어 있습니다.")
+
+            grouped = {}
+            for item in items:
+                key_time = (item.get("fcstDate", ""), item.get("fcstTime", ""))
+                grouped.setdefault(key_time, {})[item.get("category")] = item.get("fcstValue")
+
+            first_time = sorted(grouped.keys())[0]
+            values = grouped[first_time]
+
+            temp = float(values.get("T1H", 22))
+            rainfall = parse_rain(values.get("RN1", 0))
+            wind = float(values.get("WSD", 2))
+            sky = sky_label(values.get("SKY", "1"))
+            pty = pty_label(values.get("PTY", "0"))
+
+            # 강수형태가 있으면 강수량 값이 작더라도 비/눈이 있다는 판단을 추천 로직에 반영합니다.
+            adjusted_rain = max(rainfall, 1.0) if pty != "없음" and rainfall == 0 else rainfall
+
+            return {
+                "source": "기상청_단기예보 조회서비스 - 초단기예보조회",
+                "base_date": base_date,
+                "base_time": base_time,
+                "requested_at": requested_at,
+                "fcst_date": first_time[0],
+                "fcst_time": first_time[1],
+                "nx": int(nx),
+                "ny": int(ny),
+                "temp": temp,
+                "rain": adjusted_rain,
+                "rain_raw": values.get("RN1", "0"),
+                "wind": wind,
+                "sky": sky,
+                "pty": pty,
+                "raw_values": values
+            }
+        except Exception as e:
+            last_error = str(e)
+
+    raise RuntimeError(f"기상청 공공데이터 호출에 실패했습니다. {last_error or ''}")
 
 def init():
     st.session_state.setdefault("visitor_name", "")
@@ -197,7 +358,7 @@ def visitor_points(visitor_name):
 init()
 gq = generated_from_url()
 st.title("🌿 팜어드벤처: 창포마을 QR 미션")
-st.caption("농장 배치표·출력물 오류를 수정한 v8.2")
+st.caption("기상청 공공데이터 실제 연동이 추가된 v9")
 
 with st.sidebar:
     menu = st.radio("메뉴", ["홈","팜어드벤처 소개","농장주 미션 생성기","농장 배치표·출력물","공공데이터 추천","작목 퀴즈 생성","QR 미션 체험","QR 코드 만들기","수료증·포인트","관리자 데이터","초기화"])
@@ -213,7 +374,7 @@ st.session_state.theme = st.selectbox("체험 테마", list(THEMES), index=list(
 if menu == "홈":
     st.header("서비스 개요")
     st.write("팜어드벤처는 농장주가 작목·지역·방문객 유형·테마를 입력하면 작목 특징을 반영한 QR 미션 세트를 자동 생성하는 치유농장 체험 MVP입니다.")
-    st.success("v8 핵심: 농장주 미션 생성기, QR 다운로드, 현장 배치표, 출력용 안내문, 수료증·포인트 관리")
+    st.success("v9 핵심: 기상청 단기예보 API 실제 연동, 공공데이터 기반 체험 추천, 농장주 미션 생성기, QR 출력물 관리")
 
 elif menu == "팜어드벤처 소개":
     st.header("팜어드벤처 소개")
@@ -374,24 +535,117 @@ elif menu == "농장 배치표·출력물":
 
 
 elif menu == "공공데이터 추천":
-    st.header("공공데이터 기반 체험 추천")
-    st.caption("현재는 API 없이 수동 입력으로 추천 로직을 시연합니다. 향후 기상청·에어코리아·농업기상 API와 자동 연동 가능합니다.")
-    c1,c2 = st.columns(2)
+    st.header("공공데이터 연동 추천")
+    st.write(
+        "v9에서는 기상청 단기예보 API를 실제로 호출해 기온, 강수량, 풍속, 하늘상태를 불러오고 "
+        "그 값을 체험 적합도와 추천 코스에 반영합니다."
+    )
+
+    st.subheader("창포마을 위치 정보")
+    st.caption("기본값은 전북특별자치도 완주군 고산면 대아저수로 392 기준입니다.")
+    loc1, loc2 = st.columns(2)
+    with loc1:
+        lat = st.number_input("위도", value=35.9869726448865, format="%.13f")
+    with loc2:
+        lon = st.number_input("경도", value=127.259542032894, format="%.13f")
+
+    calc_nx, calc_ny = dfs_xy_conv(lat, lon)
+    st.write(f"계산된 기상청 격자 좌표: **nx {calc_nx}, ny {calc_ny}**")
+
+    c1, c2 = st.columns(2)
     with c1:
-        temp = st.slider("기온(℃)", -10, 40, 22); rain = st.slider("강수량(mm)", 0, 50, 0)
+        nx = st.number_input("기상청 nx", value=int(calc_nx), step=1)
     with c2:
-        wind = st.slider("풍속(m/s)", 0, 20, 2); pm = st.selectbox("미세먼지", ["좋음","보통","나쁨","매우나쁨"])
+        ny = st.number_input("기상청 ny", value=int(calc_ny), step=1)
+
+    st.subheader("기상청 API 인증키")
+    service_key = st.text_input(
+        "기상청 단기예보 API 일반 인증키",
+        type="password",
+        placeholder="공공데이터포털에서 복사한 일반 인증키를 붙여넣으세요."
+    )
+    st.caption("인증키는 코드나 GitHub에 저장하지 않고, 테스트할 때 화면에 직접 입력하는 방식입니다.")
+
+    pm = st.selectbox("미세먼지 상태", ["좋음","보통","나쁨","매우나쁨"], index=1)
+    st.caption("미세먼지는 v10에서 에어코리아 API 연동 예정입니다. v9에서는 수동 선택값으로 추천에 함께 반영합니다.")
+
+    use_manual = False
+    weather = None
+
+    if st.button("기상청 공공데이터 불러오기"):
+        try:
+            with st.spinner("기상청 공공데이터를 불러오는 중입니다..."):
+                weather = fetch_kma_ultra_forecast(service_key, nx, ny)
+            st.session_state["latest_weather"] = weather
+            st.success("기상청 공공데이터를 성공적으로 불러왔습니다.")
+        except Exception as e:
+            st.error(str(e))
+            st.warning("발표 당일 API 오류에 대비해 아래 수동 입력 방식으로도 추천을 계속할 수 있습니다.")
+            use_manual = True
+
+    if "latest_weather" in st.session_state and not use_manual:
+        weather = st.session_state["latest_weather"]
+
+    st.divider()
+
+    if weather:
+        st.subheader("불러온 공공데이터")
+        wc1, wc2, wc3, wc4 = st.columns(4)
+        wc1.metric("기온", f"{weather['temp']}℃")
+        wc2.metric("강수량", f"{weather['rain']}mm")
+        wc3.metric("풍속", f"{weather['wind']}m/s")
+        wc4.metric("하늘상태", weather["sky"])
+
+        st.write(f"강수형태: **{weather['pty']}**")
+        st.write(f"데이터 출처: **{weather['source']}**")
+        st.write(f"API 기준 시각: **{weather['base_date']} {weather['base_time']}**")
+        st.write(f"예보 적용 시각: **{weather['fcst_date']} {weather['fcst_time']}**")
+        st.write(f"좌표: **nx {weather['nx']}, ny {weather['ny']}**")
+
+        temp = weather["temp"]
+        rain = weather["rain"]
+        wind = weather["wind"]
+
+    else:
+        st.subheader("수동 입력 백업")
+        st.info("API 키가 아직 없거나 호출이 실패했을 때는 수동 입력으로 추천 로직을 확인할 수 있습니다.")
+        bc1, bc2 = st.columns(2)
+        with bc1:
+            temp = st.slider("기온(℃)", -10, 40, 22)
+            rain = st.slider("강수량(mm)", 0, 50, 0)
+        with bc2:
+            wind = st.slider("풍속(m/s)", 0, 20, 2)
+            st.write("하늘상태: 수동 입력에서는 추천 로직에 직접 반영하지 않습니다.")
+
     s, reasons = score(temp, rain, wind, pm, st.session_state.visitor_type)
+
+    st.subheader("공공데이터 기반 추천 결과")
     st.metric("오늘의 치유체험 적합도", f"{s}점")
-    if s >= 80: st.success("표준 야외형 코스를 추천합니다.")
-    elif s >= 60: st.warning("혼합형 코스를 추천합니다.")
-    else: st.error("실내·단축형 코스를 추천합니다.")
-    for r in reasons: st.write("- " + r)
+    if s >= 80:
+        st.success("추천 코스: 표준 야외형 코스")
+        recommended = ["입구 환영 미션", "작물 관찰 미션", "생육환경 퀴즈", "느린 걷기 미션", "마무리 수료 미션"]
+    elif s >= 60:
+        st.warning("추천 코스: 혼합형 코스")
+        recommended = ["입구 환영 미션", "작물 관찰 미션", "향기/감각 미션", "마무리 수료 미션"]
+    else:
+        st.error("추천 코스: 실내·단축형 코스")
+        recommended = ["입구 환영 미션", "향기 기억 미션", "작목 퀴즈 미션", "마무리 수료 미션"]
+
+    st.write("추천 미션 구성")
+    for i, item in enumerate(recommended, start=1):
+        st.write(f"{i}. {item}")
+
+    st.write("추천 근거")
+    for r in reasons:
+        st.write("- " + r)
+
+    st.subheader("공공데이터 활용 구조")
     st.table([
-        {"공공데이터":"기상청 단기예보","활용값":"기온·강수·풍속","앱 적용":"체험 코스 추천"},
-        {"공공데이터":"에어코리아 대기오염정보","활용값":"미세먼지","앱 적용":"실외 체류 시간 조정"},
-        {"공공데이터":"작목 생육 정보","활용값":"작물 특징·환경","앱 적용":"퀴즈·미션 자동 생성"}
+        {"공공데이터":"기상청 단기예보 실제 API", "활용값":"기온·강수량·풍속·하늘상태", "앱 적용":"체험 적합도 및 코스 추천"},
+        {"공공데이터":"에어코리아 대기오염정보", "활용값":"미세먼지·초미세먼지·오존", "앱 적용":"v10에서 실외 체류 시간 조정 예정"},
+        {"공공데이터":"작목 생육 정보", "활용값":"작물 특징·생육환경·관찰 포인트", "앱 적용":"퀴즈·미션 자동 생성"}
     ])
+
 
 elif menu == "작목 퀴즈 생성":
     st.header("작목별 쉬운 퀴즈 생성")
