@@ -6,6 +6,11 @@ from urllib.parse import quote, unquote
 from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
+
+try:
+    from streamlit_js_eval import get_geolocation
+except Exception:
+    get_geolocation = None
 import io, zipfile, math, re
 try:
     import qrcode
@@ -339,6 +344,30 @@ def combined_air_grade(pm10_grade, pm25_grade, o3_grade):
     worst = max(order.get(pm10_grade, 2), order.get(pm25_grade, 2), order.get(o3_grade, 2))
     return reverse[worst]
 
+
+def parse_geolocation_result(location):
+    """streamlit_js_eval의 위치 결과를 위도·경도로 안전하게 변환합니다."""
+    if not location:
+        return None, None, None
+
+    if isinstance(location, dict) and "error" in location:
+        error = location.get("error", {})
+        return None, None, f"위치 권한 오류: {error.get('message', error)}"
+
+    try:
+        # streamlit_js_eval get_geolocation()은 coords 내부 또는 최상위에 좌표를 줄 수 있어 둘 다 처리합니다.
+        coords = location.get("coords", location) if isinstance(location, dict) else {}
+        lat = coords.get("latitude")
+        lon = coords.get("longitude")
+        accuracy = coords.get("accuracy", None)
+
+        if lat is None or lon is None:
+            return None, None, "위치 정보를 아직 받지 못했습니다. 권한 허용 후 잠시 기다리거나 다시 눌러주세요."
+
+        return float(lat), float(lon), accuracy
+    except Exception as e:
+        return None, None, f"위치 결과 해석 중 오류가 발생했습니다: {e}"
+
 def init():
     st.session_state.setdefault("visitor_name", "")
     st.session_state.setdefault("visitor_type", "일반 성인")
@@ -466,7 +495,7 @@ def visitor_points(visitor_name):
 init()
 gq = generated_from_url()
 st.title("🌿 팜어드벤처: 창포마을 QR 미션")
-st.caption("기상청·에어코리아 공공데이터 연동이 추가된 v9-B")
+st.caption("현재 위치 기반 공공데이터 자동 추천이 추가된 v10")
 
 with st.sidebar:
     menu = st.radio("메뉴", ["홈","팜어드벤처 소개","농장주 미션 생성기","농장 배치표·출력물","공공데이터 추천","작목 퀴즈 생성","QR 미션 체험","QR 코드 만들기","수료증·포인트","관리자 데이터","초기화"])
@@ -482,7 +511,7 @@ st.session_state.theme = st.selectbox("체험 테마", list(THEMES), index=list(
 if menu == "홈":
     st.header("서비스 개요")
     st.write("팜어드벤처는 농장주가 작목·지역·방문객 유형·테마를 입력하면 작목 특징을 반영한 QR 미션 세트를 자동 생성하는 치유농장 체험 MVP입니다.")
-    st.success("v9-B 핵심: 기상청 날씨 API와 에어코리아 대기질 API를 함께 활용해 체험 코스를 추천합니다.")
+    st.success("v10 핵심: 현재 위치를 허용하면 위도·경도를 자동 인식하고, 기상청·에어코리아 공공데이터를 기반으로 체험 코스를 추천합니다.")
 
 elif menu == "팜어드벤처 소개":
     st.header("팜어드벤처 소개")
@@ -643,22 +672,55 @@ elif menu == "농장 배치표·출력물":
 
 
 elif menu == "공공데이터 추천":
-    st.header("공공데이터 연동 추천")
+    st.header("현재 위치 기반 공공데이터 추천")
     st.write(
-        "v9-B에서는 기상청 단기예보 API와 에어코리아 대기오염정보 API를 함께 활용해 "
-        "날씨와 대기질을 반영한 치유농장 체험 코스를 추천합니다."
+        "v10에서는 사용자가 위치 권한을 허용하면 현재 위도·경도를 자동으로 인식하고, "
+        "그 위치를 기상청 격자 좌표로 변환하여 날씨 공공데이터를 불러옵니다. "
+        "대기질은 에어코리아 API를 함께 활용해 체험 코스 추천에 반영합니다."
     )
 
-    st.subheader("1. 창포마을 위치 정보")
-    st.caption("기본값은 전북특별자치도 완주군 고산면 대아저수로 392 기준입니다.")
+    st.info(
+        "위치 정보는 브라우저가 사용자에게 권한을 물어본 뒤 허용한 경우에만 사용할 수 있습니다. "
+        "위치 권한이 거부되거나 실패하면 기존처럼 창포마을 기본 좌표 또는 수동 입력값으로 계속 진행할 수 있습니다."
+    )
+
+    st.subheader("1. 위치 인식")
+    use_geolocation = st.checkbox("📍 현재 위치 사용하기", value=False)
+
+    default_lat = st.session_state.get("geo_lat", 35.9869726448865)
+    default_lon = st.session_state.get("geo_lon", 127.259542032894)
+
+    if use_geolocation:
+        if get_geolocation is None:
+            st.error("위치 인식 컴포넌트가 설치되지 않았습니다. requirements.txt에 streamlit-js-eval이 필요합니다.")
+        else:
+            st.caption("브라우저에서 위치 권한을 요청하면 허용을 눌러주세요.")
+            location = get_geolocation()
+            lat_result, lon_result, geo_info = parse_geolocation_result(location)
+
+            if lat_result is not None and lon_result is not None:
+                st.session_state["geo_lat"] = lat_result
+                st.session_state["geo_lon"] = lon_result
+                default_lat = lat_result
+                default_lon = lon_result
+                if geo_info is not None:
+                    st.success(f"현재 위치를 인식했습니다. 정확도 약 {geo_info}m")
+                else:
+                    st.success("현재 위치를 인식했습니다.")
+            elif geo_info:
+                st.warning(geo_info)
+
+    st.subheader("2. 위치 좌표 확인")
+    st.caption("기본값은 전북특별자치도 완주군 고산면 대아저수로 392 기준입니다. 현재 위치 인식에 성공하면 해당 값으로 바뀝니다.")
+
     loc1, loc2 = st.columns(2)
     with loc1:
-        lat = st.number_input("위도", value=35.9869726448865, format="%.13f")
+        lat = st.number_input("위도", value=float(default_lat), format="%.13f")
     with loc2:
-        lon = st.number_input("경도", value=127.259542032894, format="%.13f")
+        lon = st.number_input("경도", value=float(default_lon), format="%.13f")
 
     calc_nx, calc_ny = dfs_xy_conv(lat, lon)
-    st.write(f"계산된 기상청 격자 좌표: **nx {calc_nx}, ny {calc_ny}**")
+    st.write(f"기상청 격자 좌표 자동 변환 결과: **nx {calc_nx}, ny {calc_ny}**")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -666,7 +728,7 @@ elif menu == "공공데이터 추천":
     with c2:
         ny = st.number_input("기상청 ny", value=int(calc_ny), step=1)
 
-    st.subheader("2. API 인증키 입력")
+    st.subheader("3. API 인증키 입력")
     k1, k2 = st.columns(2)
     with k1:
         kma_key = st.text_input(
@@ -683,16 +745,24 @@ elif menu == "공공데이터 추천":
 
     st.caption("인증키는 코드나 GitHub에 저장하지 않고, 테스트할 때 화면에 직접 입력하는 방식입니다.")
 
-    st.subheader("3. 에어코리아 조회 조건")
+    st.subheader("4. 에어코리아 조회 조건")
     air1, air2 = st.columns(2)
     with air1:
-        sido_name = st.selectbox("시도명", ["전북", "전남", "광주", "충남", "충북", "경남", "경북", "서울", "경기", "인천", "대전", "대구", "부산", "울산", "강원", "제주", "세종"], index=0)
+        sido_name = st.selectbox(
+            "시도명",
+            ["전북", "전남", "광주", "충남", "충북", "경남", "경북", "서울", "경기", "인천", "대전", "대구", "부산", "울산", "강원", "제주", "세종"],
+            index=0
+        )
     with air2:
-        station_name = st.text_input("측정소명 선택 입력", value="", placeholder="비워두면 시도 내 첫 번째 유효 측정소 사용")
+        station_name = st.text_input(
+            "측정소명 선택 입력",
+            value="",
+            placeholder="비워두면 해당 시도 내 유효 측정소 자동 선택"
+        )
 
     st.caption("정확한 측정소명을 모를 경우 비워두면 됩니다. 앱이 해당 시도 내 유효 측정소 하나를 자동 선택합니다.")
 
-    if st.button("기상청·에어코리아 공공데이터 불러오기"):
+    if st.button("현재 위치 기반 공공데이터 불러오기"):
         weather_error = None
         air_error = None
 
@@ -734,7 +804,7 @@ elif menu == "공공데이터 추천":
         st.write(f"데이터 출처: **{weather['source']}**")
         st.write(f"API 기준 시각: **{weather['base_date']} {weather['base_time']}**")
         st.write(f"예보 적용 시각: **{weather['fcst_date']} {weather['fcst_time']}**")
-        st.write(f"좌표: **nx {weather['nx']}, ny {weather['ny']}**")
+        st.write(f"좌표: **위도 {lat}, 경도 {lon} / nx {weather['nx']}, ny {weather['ny']}**")
 
         temp = weather["temp"]
         rain = weather["rain"]
@@ -774,7 +844,7 @@ elif menu == "공공데이터 추천":
     st.divider()
     s, reasons = score(temp, rain, wind, pm, st.session_state.visitor_type)
 
-    st.subheader("날씨·대기질 기반 추천 결과")
+    st.subheader("위치·날씨·대기질 기반 추천 결과")
     st.metric("오늘의 치유체험 적합도", f"{s}점")
 
     if s >= 80:
@@ -795,11 +865,13 @@ elif menu == "공공데이터 추천":
     for r in reasons:
         st.write("- " + r)
 
-    st.subheader("공공데이터 활용 구조")
+    st.subheader("공공데이터 자동화 구조")
     st.table([
-        {"공공데이터": "기상청 단기예보 실제 API", "활용값": "기온·강수량·풍속·하늘상태", "앱 적용": "체험 적합도 및 코스 추천"},
-        {"공공데이터": "에어코리아 대기오염정보 실제 API", "활용값": "PM10·PM2.5·O3·통합대기환경지수", "앱 적용": "실외 체류 시간 및 실내형 코스 추천"},
-        {"공공데이터": "작목 생육 정보", "활용값": "작물 특징·생육환경·관찰 포인트", "앱 적용": "퀴즈·미션 자동 생성"}
+        {"단계": "위치 인식", "활용 정보": "브라우저 위치 권한 기반 위도·경도", "앱 적용": "현재 위치 또는 창포마을 기본 위치 기준 설정"},
+        {"단계": "좌표 변환", "활용 정보": "기상청 격자 좌표 nx, ny", "앱 적용": "위도·경도를 단기예보 API 좌표로 변환"},
+        {"단계": "기상청 API", "활용 정보": "기온·강수량·풍속·하늘상태", "앱 적용": "체험 적합도 및 코스 추천"},
+        {"단계": "에어코리아 API", "활용 정보": "PM10·PM2.5·O3·통합대기환경지수", "앱 적용": "야외/실내 체험 비중 조정"},
+        {"단계": "작목 정보", "활용 정보": "작물 특징·생육환경·관찰 포인트", "앱 적용": "퀴즈·미션 자동 생성"}
     ])
 
 

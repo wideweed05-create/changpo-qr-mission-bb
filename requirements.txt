@@ -3,3 +3,5 @@ pandas
 qrcode[pil]
 
 requests
+
+streamlit-js-eval
