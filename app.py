@@ -22,6 +22,7 @@ st.set_page_config(page_title="팜어드벤처 | 창포마을 QR 미션", page_i
 MISSION_FILE = Path("mission_responses.csv")
 QUIZ_FILE = Path("quiz_responses.csv")
 GEN_FILE = Path("generated_mission_sets.csv")
+CROP_DB_FILE = Path("crop_quiz_data.csv")
 
 CROPS = {
     "딸기": {
@@ -60,6 +61,59 @@ CROPS = {
         "quiz": [("허브 체험에서 쉽게 느낄 수 있는 감각은?", ["향기", "금속 소리", "전기 신호", "짠맛만"], "향기"), ("허브 잎을 관찰할 때 보기 좋은 것은?", ["향과 잎 모양", "철사 굵기", "유리 조각", "플라스틱 색"], "향과 잎 모양")]
     }
 }
+
+
+def load_crop_db(default_crops):
+    """crop_quiz_data.csv가 있으면 외부 작목 DB를 우선 사용합니다."""
+    if not CROP_DB_FILE.exists():
+        return default_crops
+    try:
+        df = pd.read_csv(CROP_DB_FILE, encoding="utf-8-sig").fillna("")
+        if df.empty:
+            return default_crops
+
+        crops = {}
+        for _, row in df.iterrows():
+            crop = str(row.get("crop", "")).strip()
+            if not crop:
+                continue
+
+            quizzes = []
+            for idx in [1, 2, 3]:
+                q = str(row.get(f"quiz{idx}_question", "")).strip()
+                opts = str(row.get(f"quiz{idx}_options", "")).strip()
+                ans = str(row.get(f"quiz{idx}_answer", "")).strip()
+                if q and opts and ans:
+                    quizzes.append((q, [x.strip() for x in opts.split("|") if x.strip()], ans))
+
+            if not quizzes:
+                quizzes = default_crops.get(crop, {}).get("quiz", [])
+
+            info = []
+            for col in ["info1", "info2", "info3", "info4", "info5"]:
+                val = str(row.get(col, "")).strip()
+                if val:
+                    info.append(val)
+
+            crops[crop] = {
+                "summary": str(row.get("summary", "")).strip() or default_crops.get(crop, {}).get("summary", ""),
+                "feature": str(row.get("feature", "")).strip() or default_crops.get(crop, {}).get("feature", ""),
+                "env": str(row.get("environment", "")).strip() or default_crops.get(crop, {}).get("env", ""),
+                "info": info or default_crops.get(crop, {}).get("info", []),
+                "quiz": quizzes,
+                "source": str(row.get("source", "")).strip(),
+                "source_url": str(row.get("source_url", "")).strip(),
+                "observation_point": str(row.get("observation_point", "")).strip(),
+                "safety_note": str(row.get("safety_note", "")).strip(),
+            }
+
+        return crops if crops else default_crops
+    except Exception as e:
+        st.warning(f"작목 DB 파일을 읽는 중 오류가 발생해 기본 데이터를 사용합니다: {e}")
+        return default_crops
+
+CROPS = load_crop_db(CROPS)
+
 
 THEMES = {
     "힐링형": "감정 기록, 향기, 산책, 회고 중심의 부드러운 미션",
@@ -495,10 +549,10 @@ def visitor_points(visitor_name):
 init()
 gq = generated_from_url()
 st.title("🌿 팜어드벤처: 창포마을 QR 미션")
-st.caption("현재 위치 기반 공공데이터 자동 추천이 추가된 v10")
+st.caption("공식자료 기반 작목 퀴즈 DB가 추가된 v11")
 
 with st.sidebar:
-    menu = st.radio("메뉴", ["홈","팜어드벤처 소개","농장주 미션 생성기","농장 배치표·출력물","공공데이터 추천","작목 퀴즈 생성","QR 미션 체험","QR 코드 만들기","수료증·포인트","관리자 데이터","초기화"])
+    menu = st.radio("메뉴", ["홈","팜어드벤처 소개","농장주 미션 생성기","농장 배치표·출력물","공공데이터 추천","작목 퀴즈 생성","작목 데이터 관리","QR 미션 체험","QR 코드 만들기","수료증·포인트","관리자 데이터","초기화"])
 if gq: menu = "QR 미션 체험"
 
 st.subheader("방문자 기본 정보")
@@ -511,7 +565,7 @@ st.session_state.theme = st.selectbox("체험 테마", list(THEMES), index=list(
 if menu == "홈":
     st.header("서비스 개요")
     st.write("팜어드벤처는 농장주가 작목·지역·방문객 유형·테마를 입력하면 작목 특징을 반영한 QR 미션 세트를 자동 생성하는 치유농장 체험 MVP입니다.")
-    st.success("v10 핵심: 현재 위치를 허용하면 위도·경도를 자동 인식하고, 기상청·에어코리아 공공데이터를 기반으로 체험 코스를 추천합니다.")
+    st.success("v11 핵심: 기상청·에어코리아 공공데이터 추천에 더해, 작목별 공식자료 기반 퀴즈 DB를 분리 관리합니다.")
 
 elif menu == "팜어드벤처 소개":
     st.header("팜어드벤처 소개")
@@ -877,15 +931,110 @@ elif menu == "공공데이터 추천":
 
 elif menu == "작목 퀴즈 생성":
     st.header("작목별 쉬운 퀴즈 생성")
-    crop = st.session_state.crop; c = CROPS[crop]
-    st.subheader(crop); st.write(c["summary"])
-    for i in c["info"]: st.write("- " + i)
+    crop = st.session_state.crop
+    c = CROPS[crop]
+
+    st.subheader(crop)
+    st.write(c["summary"])
+
+    source = c.get("source", "")
+    source_url = c.get("source_url", "")
+    if source:
+        st.caption(f"작목 정보 출처: {source}")
+    if source_url:
+        st.caption(f"출처 URL/메모: {source_url}")
+
+    st.write("작목 기본 정보")
+    for i in c["info"]:
+        st.write("- " + i)
+
+    if c.get("observation_point"):
+        st.info(f"방문객 관찰 포인트: {c.get('observation_point')}")
+    if c.get("safety_note"):
+        st.warning(f"안전 주의: {c.get('safety_note')}")
+
+    st.divider()
+    st.subheader("퀴즈 풀기")
     q = st.selectbox("퀴즈 선택", c["quiz"], format_func=lambda x:x[0])
     choice = st.radio("정답 선택", q[1])
+
     if st.button("정답 확인 및 기록 저장"):
         ok = choice == q[2]
-        append_csv(QUIZ_FILE, {"timestamp":datetime.now().strftime("%Y-%m-%d %H:%M:%S"),"visitor_name":st.session_state.visitor_name or "익명","visitor_type":st.session_state.visitor_type,"theme":st.session_state.theme,"crop":crop,"question":q[0],"selected":choice,"answer":q[2],"correct":ok,"earned_points":5 if ok else 0})
+        append_csv(QUIZ_FILE, {
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "visitor_name": st.session_state.visitor_name or "익명",
+            "visitor_type": st.session_state.visitor_type,
+            "theme": st.session_state.theme,
+            "crop": crop,
+            "question": q[0],
+            "selected": choice,
+            "answer": q[2],
+            "correct": ok,
+            "earned_points": 5 if ok else 0
+        })
         st.success("정답입니다! 5P 적립") if ok else st.error(f"아쉽습니다. 정답은 {q[2]}입니다.")
+
+
+elif menu == "작목 데이터 관리":
+    st.header("작목 데이터 관리")
+    st.write(
+        "v11에서는 작목 정보를 app.py 안에만 넣지 않고, crop_quiz_data.csv 파일로 분리했습니다. "
+        "팀원이 공식자료를 정리해 CSV에 추가하면 앱의 작목 퀴즈와 미션 생성에 바로 반영할 수 있습니다."
+    )
+
+    if CROP_DB_FILE.exists():
+        df_crop = pd.read_csv(CROP_DB_FILE, encoding="utf-8-sig").fillna("")
+        st.success("crop_quiz_data.csv 파일을 불러왔습니다.")
+    else:
+        df_crop = pd.DataFrame([
+            {
+                "crop": crop,
+                "summary": data.get("summary", ""),
+                "feature": data.get("feature", ""),
+                "environment": data.get("env", ""),
+                "info1": data.get("info", [""])[0] if len(data.get("info", [])) > 0 else "",
+                "info2": data.get("info", ["",""])[1] if len(data.get("info", [])) > 1 else "",
+                "info3": data.get("info", ["","",""])[2] if len(data.get("info", [])) > 2 else "",
+                "observation_point": data.get("feature", ""),
+                "safety_note": "작물을 함부로 꺾거나 훼손하지 않기",
+                "quiz1_question": data.get("quiz", [("", [], "")])[0][0] if len(data.get("quiz", [])) > 0 else "",
+                "quiz1_options": "|".join(data.get("quiz", [("", [], "")])[0][1]) if len(data.get("quiz", [])) > 0 else "",
+                "quiz1_answer": data.get("quiz", [("", [], "")])[0][2] if len(data.get("quiz", [])) > 0 else "",
+                "quiz2_question": data.get("quiz", [("", [], "")])[1][0] if len(data.get("quiz", [])) > 1 else "",
+                "quiz2_options": "|".join(data.get("quiz", [("", [], "")])[1][1]) if len(data.get("quiz", [])) > 1 else "",
+                "quiz2_answer": data.get("quiz", [("", [], "")])[1][2] if len(data.get("quiz", [])) > 1 else "",
+                "quiz3_question": "",
+                "quiz3_options": "",
+                "quiz3_answer": "",
+                "source": data.get("source", "공식자료 확인 필요"),
+                "source_url": data.get("source_url", "")
+            }
+            for crop, data in CROPS.items()
+        ])
+        st.info("외부 CSV가 없어서 현재 앱 기본 작목 데이터를 표로 보여줍니다.")
+
+    st.dataframe(df_crop, use_container_width=True)
+
+    st.download_button(
+        "작목 DB CSV 다운로드",
+        df_crop.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
+        "crop_quiz_data.csv",
+        "text/csv"
+    )
+
+    st.subheader("팀원 자료 정리 양식")
+    st.write("새 작목을 추가하거나 공식 출처를 보강할 때는 아래 형식으로 정리하면 됩니다.")
+    st.code(
+        "crop, summary, feature, environment, info1, info2, info3, observation_point, safety_note, "
+        "quiz1_question, quiz1_options, quiz1_answer, source, source_url",
+        language="text"
+    )
+
+    st.warning(
+        "출처가 불명확한 작목 정보는 발표에서 약점이 될 수 있습니다. "
+        "농사로, 농촌진흥청, 지자체 농업기술센터 등 공식자료 기반으로 source 칸을 채워주세요."
+    )
+
 
 elif menu == "QR 미션 체험":
     st.header("QR 미션 체험")
