@@ -548,26 +548,27 @@ def visitor_points(visitor_name):
 
 init()
 
+def get_secret_value(key_name):
+    try:
+        return st.secrets.get(key_name, "")
+    except Exception:
+        return ""
+
+def api_key_input(label, secret_name, placeholder):
+    secret_value = get_secret_value(secret_name)
+    if secret_value:
+        st.success(f"{label}가 보안 설정에 저장되어 있습니다.")
+        return secret_value
+    return st.text_input(label, type="password", placeholder=placeholder)
+
 gq = generated_from_url()
 
 st.title("🌿 팜어드벤처")
-st.caption("공공데이터 기반 QR 농장 체험 웹앱")
+st.caption("공공데이터 기반 QR 농장 체험 웹앱 · v14 서비스형 구조")
 
 with st.sidebar:
     st.header("팜어드벤처")
-    menu = st.radio(
-        "메뉴",
-        [
-            "홈",
-            "방문객 모드",
-            "농장주 모드",
-            "오늘의 체험 환경 분석",
-            "작목 퀴즈",
-            "내 포인트·수료증",
-            "관리자 모드",
-            "설정",
-        ]
-    )
+    menu = st.radio("메뉴", ["홈", "방문객 모드", "농장주 모드", "관리자 모드", "설정"])
 
     st.divider()
     st.subheader("기본 정보")
@@ -579,9 +580,6 @@ with st.sidebar:
 if gq:
     menu = "방문객 모드"
 
-# ─────────────────────────────────────────────────────────────
-# 홈
-# ─────────────────────────────────────────────────────────────
 if menu == "홈":
     st.header("농장 체험을 QR 미션으로 바꾸다")
     st.write(
@@ -607,16 +605,12 @@ if menu == "홈":
     st.write("3. 농장주용 QR 미션 자동 생성")
     st.write("4. 방문자 포인트·수료증 발급")
     st.write("5. 관리자 데이터 확인 및 CSV 다운로드")
+    st.write("6. API 키 보안 저장 시 자동 공공데이터 조회")
+    st.info("왼쪽 메뉴를 방문객·농장주·관리자 중심으로 정리했습니다.")
 
-    st.info("스마트폰에서는 배포 주소 또는 QR 코드로 접속해 앱처럼 사용할 수 있습니다.")
-
-# ─────────────────────────────────────────────────────────────
-# 방문객 모드
-# ─────────────────────────────────────────────────────────────
 elif menu == "방문객 모드":
     st.header("방문객 모드")
-
-    tab_mission, tab_quiz, tab_points = st.tabs(["오늘의 미션", "작목 퀴즈", "내 포인트"])
+    tab_mission, tab_quiz, tab_points = st.tabs(["오늘의 미션", "작목 퀴즈", "내 포인트·수료증"])
 
     with tab_mission:
         if gq:
@@ -679,8 +673,14 @@ elif menu == "방문객 모드":
         st.write(c["summary"])
         if c.get("source"):
             st.caption(f"작목 정보 출처: {c.get('source')}")
+        if c.get("source_url"):
+            st.caption(f"출처 URL/메모: {c.get('source_url')}")
         for info in c["info"]:
             st.write("- " + info)
+        if c.get("observation_point"):
+            st.info(f"관찰 포인트: {c.get('observation_point')}")
+        if c.get("safety_note"):
+            st.warning(f"안전 주의: {c.get('safety_note')}")
 
         q = st.selectbox("퀴즈 선택", c["quiz"], format_func=lambda x: x[0], key="visitor_quiz_select")
         choice = st.radio("정답 선택", q[1], key="visitor_quiz_choice")
@@ -707,22 +707,38 @@ elif menu == "방문객 모드":
     with tab_points:
         name = st.session_state.visitor_name or "익명"
         mission_count, quiz_count, total_points = visitor_points(name)
-        st.metric("보유 포인트", f"{total_points}P")
-        st.write(f"완료 미션: **{mission_count}개**")
-        st.write(f"퀴즈 참여: **{quiz_count}개**")
-        if total_points >= 50:
-            st.success("수료 조건을 달성했습니다. 수료증 메뉴에서 수료증을 확인하세요.")
-        else:
-            st.info(f"수료증까지 {max(0, 50-total_points)}P 남았습니다.")
 
-# ─────────────────────────────────────────────────────────────
-# 농장주 모드
-# ─────────────────────────────────────────────────────────────
+        a, b, c = st.columns(3)
+        a.metric("완료 미션", f"{mission_count}개")
+        b.metric("퀴즈 참여", f"{quiz_count}개")
+        c.metric("보유 포인트", f"{total_points}P")
+
+        status = "수료" if total_points >= 50 or mission_count >= 5 else "진행 중"
+        coupon = "농산물 5% 할인 쿠폰" if status == "수료" else "50P 달성 시 쿠폰 발급"
+
+        certificate = f"""🌿 팜어드벤처 체험 수료증
+
+이름/팀명: {name}
+체험 작목: {st.session_state.crop}
+체험 테마: {st.session_state.theme}
+방문자 유형: {st.session_state.visitor_type}
+
+완료 미션 수: {mission_count}개
+퀴즈 참여 수: {quiz_count}개
+획득 포인트: {total_points}P
+수료 상태: {status}
+혜택: {coupon}
+
+발급 일시: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+"""
+        st.text_area("수료증 미리보기", certificate, height=300)
+        st.download_button("수료증 TXT 다운로드", certificate.encode("utf-8-sig"), "farm_adventure_certificate.txt", "text/plain")
+
 elif menu == "농장주 모드":
     st.header("농장주 모드")
-    st.write("작목과 테마를 선택해 농장에 붙일 QR 미션 세트를 생성하고 출력물을 준비합니다.")
+    st.write("농장 운영자가 QR 미션을 만들고, 당일 체험 환경을 분석하며, 출력물을 준비하는 공간입니다.")
 
-    tab_gen, tab_print = st.tabs(["QR 미션 생성", "배치표·출력물"])
+    tab_gen, tab_env, tab_print = st.tabs(["QR 미션 생성", "오늘의 체험 환경 분석", "배치표·출력물"])
 
     with tab_gen:
         farm = st.text_input("농장명", "창포마을 치유농장")
@@ -772,7 +788,6 @@ elif menu == "농장주 모드":
 
             zip_buffer.seek(0)
             st.download_button("전체 QR ZIP 다운로드", zip_buffer.getvalue(), "farm_adventure_qr_set.zip", "application/zip")
-
             mission_df = pd.DataFrame(st.session_state.generated)
             st.download_button(
                 "미션 목록 CSV 다운로드",
@@ -781,17 +796,113 @@ elif menu == "농장주 모드":
                 "text/csv"
             )
 
+    with tab_env:
+        st.subheader("오늘의 체험 환경 분석")
+        st.write("현재 위치 또는 기본 위치를 기준으로 기상청·에어코리아 공공데이터를 불러와 체험 코스를 추천합니다.")
+
+        use_geo = st.checkbox("📍 현재 위치 사용하기", value=False)
+        default_lat = st.session_state.get("geo_lat", 35.9869726448865)
+        default_lon = st.session_state.get("geo_lon", 127.259542032894)
+
+        if use_geo:
+            if get_geolocation is None:
+                st.error("위치 인식 컴포넌트가 설치되지 않았습니다.")
+            else:
+                location = get_geolocation()
+                lat_result, lon_result, geo_info = parse_geolocation_result(location)
+                if lat_result and lon_result:
+                    st.session_state.geo_lat = lat_result
+                    st.session_state.geo_lon = lon_result
+                    default_lat = lat_result
+                    default_lon = lon_result
+                    st.success("현재 위치를 인식했습니다.")
+                elif geo_info:
+                    st.warning(geo_info)
+
+        col_lat, col_lon = st.columns(2)
+        with col_lat:
+            lat = st.number_input("위도", value=float(default_lat), format="%.13f")
+        with col_lon:
+            lon = st.number_input("경도", value=float(default_lon), format="%.13f")
+
+        nx_calc, ny_calc = dfs_xy_conv(lat, lon)
+        st.write(f"기상청 격자 좌표: **nx {nx_calc}, ny {ny_calc}**")
+
+        with st.expander("API 인증키"):
+            kma_key = api_key_input("기상청 API 키", "KMA_API_KEY", "기상청 API 키")
+            air_key = api_key_input("에어코리아 API 키", "AIRKOREA_API_KEY", "에어코리아 API 키")
+
+        col_air1, col_air2 = st.columns(2)
+        with col_air1:
+            sido = st.selectbox("시도명", ["전북", "전남", "광주", "충남", "충북", "경남", "경북", "서울", "경기", "인천", "대전", "대구", "부산", "울산", "강원", "제주", "세종"])
+        with col_air2:
+            station = st.text_input("측정소명", placeholder="비워두면 자동 선택")
+
+        if st.button("공공데이터 불러오기"):
+            try:
+                weather = fetch_kma_ultra_forecast(kma_key, nx_calc, ny_calc)
+                st.session_state.latest_weather = weather
+                st.success("기상청 데이터를 불러왔습니다.")
+            except Exception as e:
+                st.error(f"기상청 호출 실패: {e}")
+
+            try:
+                air = fetch_airkorea_sido(air_key, sido_name=sido, station_name=station)
+                st.session_state.latest_air = air
+                st.success("에어코리아 데이터를 불러왔습니다.")
+            except Exception as e:
+                st.error(f"에어코리아 호출 실패: {e}")
+
+        weather = st.session_state.get("latest_weather")
+        air = st.session_state.get("latest_air")
+
+        if weather:
+            st.subheader("기상 데이터")
+            wa, wb, wc, wd = st.columns(4)
+            wa.metric("기온", f"{weather['temp']}℃")
+            wb.metric("강수량", f"{weather['rain']}mm")
+            wc.metric("풍속", f"{weather['wind']}m/s")
+            wd.metric("하늘상태", weather["sky"])
+            temp, rain, wind = weather["temp"], weather["rain"], weather["wind"]
+        else:
+            st.subheader("기상 수동 입력")
+            temp = st.slider("기온(℃)", -10, 40, 22)
+            rain = st.slider("강수량(mm)", 0, 50, 0)
+            wind = st.slider("풍속(m/s)", 0, 20, 2)
+
+        if air:
+            st.subheader("대기질 데이터")
+            aa, ab, ac, ad = st.columns(4)
+            aa.metric("PM10", f"{air['pm10']}㎍/㎥")
+            ab.metric("PM2.5", f"{air['pm25']}㎍/㎥")
+            ac.metric("오존", f"{air['o3']}ppm")
+            ad.metric("통합대기", air["khai_grade"])
+            st.write(f"측정소: **{air['station']}** / 측정 시각: **{air['data_time']}**")
+            pm = combined_air_grade(air["pm10_grade"], air["pm25_grade"], air["o3_grade"])
+        else:
+            st.subheader("대기질 수동 입력")
+            pm = st.selectbox("미세먼지 상태", ["좋음", "보통", "나쁨", "매우나쁨"], index=1)
+
+        st.divider()
+        s, reasons = score(temp, rain, wind, pm, st.session_state.visitor_type)
+        st.metric("오늘의 치유체험 적합도", f"{s}점")
+
+        if s >= 80:
+            st.success("추천 코스: 표준 야외형 코스")
+        elif s >= 60:
+            st.warning("추천 코스: 혼합형 코스")
+        else:
+            st.error("추천 코스: 실내·단축형 코스")
+
+        for r in reasons:
+            st.write("- " + r)
+
     with tab_print:
         if st.session_state.generated:
             mission_set = st.session_state.generated
             st.success("현재 생성된 미션 세트를 기준으로 출력물을 만듭니다.")
         else:
-            farm = "창포마을 치유농장"
-            region = "창포마을"
-            crop = st.session_state.crop
-            visitor = st.session_state.visitor_type
-            theme = st.session_state.theme
-            mission_set = gen_missions(farm, region, crop, visitor, theme, 5)
+            mission_set = gen_missions("창포마을 치유농장", "창포마을", st.session_state.crop, st.session_state.visitor_type, st.session_state.theme, 5)
             st.info("생성된 미션 세트가 없어 현재 기본값으로 출력물 예시를 만듭니다.")
 
         st.subheader("현장 배치표")
@@ -812,7 +923,7 @@ elif menu == "농장주 모드":
             "text/csv"
         )
 
-        guide = f"""🌿 팜어드벤처 QR 미션 안내
+        guide = """🌿 팜어드벤처 QR 미션 안내
 
 참여 방법
 1. 농장 곳곳에 있는 QR 코드를 스마트폰으로 스캔합니다.
@@ -843,190 +954,6 @@ elif menu == "농장주 모드":
             "text/csv"
         )
 
-# ─────────────────────────────────────────────────────────────
-# 오늘의 체험 환경 분석
-# ─────────────────────────────────────────────────────────────
-elif menu == "오늘의 체험 환경 분석":
-    st.header("오늘의 체험 환경 분석")
-    st.write("현재 위치 또는 기본 위치를 기준으로 기상청·에어코리아 공공데이터를 불러와 체험 코스를 추천합니다.")
-
-    use_geo = st.checkbox("📍 현재 위치 사용하기", value=False)
-    default_lat = st.session_state.get("geo_lat", 35.9869726448865)
-    default_lon = st.session_state.get("geo_lon", 127.259542032894)
-
-    if use_geo:
-        if get_geolocation is None:
-            st.error("위치 인식 컴포넌트가 설치되지 않았습니다.")
-        else:
-            location = get_geolocation()
-            lat_result, lon_result, geo_info = parse_geolocation_result(location)
-            if lat_result and lon_result:
-                st.session_state.geo_lat = lat_result
-                st.session_state.geo_lon = lon_result
-                default_lat = lat_result
-                default_lon = lon_result
-                st.success("현재 위치를 인식했습니다.")
-            elif geo_info:
-                st.warning(geo_info)
-
-    col_lat, col_lon = st.columns(2)
-    with col_lat:
-        lat = st.number_input("위도", value=float(default_lat), format="%.13f")
-    with col_lon:
-        lon = st.number_input("경도", value=float(default_lon), format="%.13f")
-
-    nx_calc, ny_calc = dfs_xy_conv(lat, lon)
-    st.write(f"기상청 격자 좌표: **nx {nx_calc}, ny {ny_calc}**")
-
-    with st.expander("API 인증키 입력"):
-        kma_key = st.text_input("기상청 API 키", type="password")
-        air_key = st.text_input("에어코리아 API 키", type="password")
-
-    col_air1, col_air2 = st.columns(2)
-    with col_air1:
-        sido = st.selectbox("시도명", ["전북", "전남", "광주", "충남", "충북", "경남", "경북", "서울", "경기", "인천", "대전", "대구", "부산", "울산", "강원", "제주", "세종"])
-    with col_air2:
-        station = st.text_input("측정소명", placeholder="비워두면 자동 선택")
-
-    if st.button("공공데이터 불러오기"):
-        try:
-            weather = fetch_kma_ultra_forecast(kma_key, nx_calc, ny_calc)
-            st.session_state.latest_weather = weather
-            st.success("기상청 데이터를 불러왔습니다.")
-        except Exception as e:
-            st.error(f"기상청 호출 실패: {e}")
-
-        try:
-            air = fetch_airkorea_sido(air_key, sido_name=sido, station_name=station)
-            st.session_state.latest_air = air
-            st.success("에어코리아 데이터를 불러왔습니다.")
-        except Exception as e:
-            st.error(f"에어코리아 호출 실패: {e}")
-
-    weather = st.session_state.get("latest_weather")
-    air = st.session_state.get("latest_air")
-
-    if weather:
-        st.subheader("기상 데이터")
-        a, b, c, d = st.columns(4)
-        a.metric("기온", f"{weather['temp']}℃")
-        b.metric("강수량", f"{weather['rain']}mm")
-        c.metric("풍속", f"{weather['wind']}m/s")
-        d.metric("하늘상태", weather["sky"])
-        temp, rain, wind = weather["temp"], weather["rain"], weather["wind"]
-    else:
-        st.subheader("기상 수동 입력")
-        temp = st.slider("기온(℃)", -10, 40, 22)
-        rain = st.slider("강수량(mm)", 0, 50, 0)
-        wind = st.slider("풍속(m/s)", 0, 20, 2)
-
-    if air:
-        st.subheader("대기질 데이터")
-        e, f, g, h = st.columns(4)
-        e.metric("PM10", f"{air['pm10']}㎍/㎥")
-        f.metric("PM2.5", f"{air['pm25']}㎍/㎥")
-        g.metric("오존", f"{air['o3']}ppm")
-        h.metric("통합대기", air["khai_grade"])
-        st.write(f"측정소: **{air['station']}** / 측정 시각: **{air['data_time']}**")
-        pm = combined_air_grade(air["pm10_grade"], air["pm25_grade"], air["o3_grade"])
-    else:
-        st.subheader("대기질 수동 입력")
-        pm = st.selectbox("미세먼지 상태", ["좋음", "보통", "나쁨", "매우나쁨"], index=1)
-
-    st.divider()
-    s, reasons = score(temp, rain, wind, pm, st.session_state.visitor_type)
-    st.metric("오늘의 치유체험 적합도", f"{s}점")
-
-    if s >= 80:
-        st.success("추천 코스: 표준 야외형 코스")
-    elif s >= 60:
-        st.warning("추천 코스: 혼합형 코스")
-    else:
-        st.error("추천 코스: 실내·단축형 코스")
-
-    for r in reasons:
-        st.write("- " + r)
-
-# ─────────────────────────────────────────────────────────────
-# 작목 퀴즈
-# ─────────────────────────────────────────────────────────────
-elif menu == "작목 퀴즈":
-    st.header("작목 퀴즈")
-    crop = st.session_state.crop
-    c = CROPS[crop]
-
-    st.subheader(crop)
-    st.write(c["summary"])
-    if c.get("source"):
-        st.caption(f"정보 출처: {c.get('source')}")
-    if c.get("source_url"):
-        st.caption(f"출처 URL/메모: {c.get('source_url')}")
-
-    st.write("작목 기본 정보")
-    for info in c["info"]:
-        st.write("- " + info)
-
-    if c.get("observation_point"):
-        st.info(f"관찰 포인트: {c.get('observation_point')}")
-    if c.get("safety_note"):
-        st.warning(f"안전 주의: {c.get('safety_note')}")
-
-    q = st.selectbox("퀴즈 선택", c["quiz"], format_func=lambda x: x[0])
-    choice = st.radio("정답 선택", q[1])
-
-    if st.button("정답 확인 및 기록 저장"):
-        ok = choice == q[2]
-        append_csv(QUIZ_FILE, {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "visitor_name": st.session_state.visitor_name or "익명",
-            "visitor_type": st.session_state.visitor_type,
-            "theme": st.session_state.theme,
-            "crop": crop,
-            "question": q[0],
-            "selected": choice,
-            "answer": q[2],
-            "correct": ok,
-            "earned_points": 5 if ok else 0
-        })
-        st.success("정답입니다. 5P가 적립되었습니다.") if ok else st.error(f"아쉽습니다. 정답은 {q[2]}입니다.")
-
-# ─────────────────────────────────────────────────────────────
-# 내 포인트·수료증
-# ─────────────────────────────────────────────────────────────
-elif menu == "내 포인트·수료증":
-    st.header("내 포인트·수료증")
-    name = st.session_state.visitor_name or "익명"
-    mission_count, quiz_count, total_points = visitor_points(name)
-
-    a, b, c = st.columns(3)
-    a.metric("완료 미션", f"{mission_count}개")
-    b.metric("퀴즈 참여", f"{quiz_count}개")
-    c.metric("보유 포인트", f"{total_points}P")
-
-    status = "수료" if total_points >= 50 or mission_count >= 5 else "진행 중"
-    coupon = "농산물 5% 할인 쿠폰" if status == "수료" else "50P 달성 시 쿠폰 발급"
-
-    certificate = f"""🌿 팜어드벤처 체험 수료증
-
-이름/팀명: {name}
-체험 작목: {st.session_state.crop}
-체험 테마: {st.session_state.theme}
-방문자 유형: {st.session_state.visitor_type}
-
-완료 미션 수: {mission_count}개
-퀴즈 참여 수: {quiz_count}개
-획득 포인트: {total_points}P
-수료 상태: {status}
-혜택: {coupon}
-
-발급 일시: {datetime.now().strftime('%Y-%m-%d %H:%M')}
-"""
-    st.text_area("수료증 미리보기", certificate, height=300)
-    st.download_button("수료증 TXT 다운로드", certificate.encode("utf-8-sig"), "farm_adventure_certificate.txt", "text/plain")
-
-# ─────────────────────────────────────────────────────────────
-# 관리자 모드
-# ─────────────────────────────────────────────────────────────
 elif menu == "관리자 모드":
     st.header("관리자 모드")
     tab_data, tab_crop, tab_reset = st.tabs(["방문 기록", "작목 데이터", "데이터 초기화"])
@@ -1092,9 +1019,6 @@ elif menu == "관리자 모드":
                 GEN_FILE.unlink()
                 st.success("생성 기록이 삭제되었습니다.")
 
-# ─────────────────────────────────────────────────────────────
-# 설정
-# ─────────────────────────────────────────────────────────────
 elif menu == "설정":
     st.header("설정")
     st.subheader("앱 주소")
@@ -1120,8 +1044,12 @@ elif menu == "설정":
         zip_buffer.seek(0)
         st.download_button("기본 QR 전체 ZIP 다운로드", zip_buffer.getvalue(), "basic_qr_codes.zip", "application/zip")
 
-    st.subheader("API 키 관리 안내")
+    st.subheader("API 키 보안 설정")
     st.info(
-        "현재는 기상청·에어코리아 API 키를 화면에서 직접 입력하는 방식입니다. "
-        "다음 단계에서는 Streamlit Secrets로 옮겨 키를 숨기는 구조로 전환할 수 있습니다."
+        "v14에서는 Streamlit Secrets에 API 키를 저장하면 화면 입력 없이 자동으로 사용됩니다. "
+        "Secrets가 없을 경우에만 농장주 모드의 체험 환경 분석 화면에서 직접 입력하면 됩니다."
+    )
+    st.code(
+        'KMA_API_KEY = "기상청_일반_인증키"\nAIRKOREA_API_KEY = "에어코리아_일반_인증키"',
+        language="toml"
     )
